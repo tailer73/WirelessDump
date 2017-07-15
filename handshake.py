@@ -58,7 +58,8 @@ class Client:
                 lst.append(x)
             tmp = plist.PacketList(lst,"goodHandshake")
             wrpcap('good_eapol.cap', tmp)
-            print('HANDSHAKE ready for client: {0}'.format(self.clientMAC))
+            lg = Logging(LOGS_DIR + 'main.log')
+            lg.write_log('HANDSHAKE', 'Ддя клиента: {} осуществлен перехват Handshake'.format(self.clientMAC))
             self.auth = True
             handshake.on_exit('wlan0')
             #raise KeyboardInterrupt
@@ -85,7 +86,7 @@ class Client:
             elif eapKey =='key3' and self.tmpSession.ANonce != nonce:
                 self.tmpSession.updateInfo(None, None, None, None, None)
                 self.goodSession.clear()
-            print('ClientMAC: {0}, EAPOL ({1} from 4)'.format(self.clientMAC,eapKey))
+            # print('ClientMAC: {0}, EAPOL ({1} from 4)'.format(self.clientMAC,eapKey))
             self.tmpSession.Keys[eapKey] = True
             self.goodSession[eapKey] = pkt
         else:
