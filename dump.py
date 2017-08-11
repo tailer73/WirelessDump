@@ -4,9 +4,12 @@ import time
 import signal
 import sys
 
+from multiprocessing import Process
 import threading
-from pynput import keyboard
-from pynput.keyboard import Key,Controller
+import os
+import sys
+import multiprocessing
+import logging
 import json
 from myLogs import Logging
 from scapy.all import *
@@ -14,6 +17,9 @@ from constants import *
 from scapy.layers.dot11 import  Dot11,Dot11Beacon,Dot11Deauth,Dot11ProbeResp,Dot11Elt,RadioTap,EAPOL
 from NA import NetworkAdapters as na
 
+logging.basicConfig(format=u'[%(asctime)s] %(levelname)-8s  %(message)s (%(filename)s)',
+                    level=LOG_LEVEL,
+                    filename=LOGS_DIR + u'main.log')
 
 class filter:
 
@@ -39,7 +45,7 @@ class filter:
 
     @staticmethod
     def bssid(_bssid):
-        BSSid = lambda x: Dot11 in x and x[Dot11].addr3 == _bssid
+        BSSid = lambda x: Dot11 in x and x[Dot11].addr3 ==_bssid
         return BSSid
 
     @staticmethod
@@ -56,51 +62,39 @@ class wifiDump:
                         - prn (метод, который будет приментс дл обработки каждого перехваченного пакета)
                         - filter (правила фильтра)
                         """
-    def __init__(self,_iface=None,_offline=None,_store = 1):
+    def __init__(self,_iface=None,_offline=None,_filter=lambda x:x.haslayer(Dot11),_store = 1):
         self.iface = _iface
         self.offline = _offline
         self.store = _store
-        self.prn = None
-        self.filter = None
-        self.log = Logging(LOGS_DIR + 'main.log')
+        self.papack = None
+        self.filter = _filter
+        signal.signal(signal.SIGUSR1, self.read_state)
         self.state = STATES_DIR + 'dump.state'
 
     # Метод дл проверки изменени значени - завершени работы
-    def read_state(self):
-        tmp_fl = open(self.state, 'r')
-        jsn = json.load(tmp_fl)
-        tmp_fl.close()
-        if not jsn['running']:
-            self.event.clear()
-        time.sleep(10)
+    def read_state(self,signum,frame):
+        self.begin_condition(self.iface)
+        raise KeyboardInterrupt
 
     # Запуск перехвата сетевых пакетов
-    def start(self,prn,filter=lambda x:x.haslayer(Dot11)):
-        run = {}
-        run['running'] = True
-        fl_run = open(STATES_DIR + 'dump.state', 'w')
-        fl_run.writelines(json.dumps(run))
-        fl_run.close()
-
+    def start1(self,prn,_filter):
         na.set_mode(self.iface, 'monitor')
         time.sleep(2)
 
-        self.filter = filter
-        if prn is None:
-            self.prn = self.prns
-        else:
-            self.prn = prn
-        self.event = threading.Event()
-        self.event.set()
-        self.t1 = threading.Thread(None, self.my_sniff)
-        try:
-            self.t1.start()
-        except KeyboardInterrupt:
-            self.event.clear()
-            self.t1.join()
+        self.papack = prn
+        self.my_sniff()
 
-        while self.event.is_set():
-            self.read_state()
+    def start(self,parse_packet=None,filter=lambda x:x.haslayer(Dot11)):
+        p = Process(target=self.start1, args=(parse_packet, filter))
+        p.start()
+
+        run = {}
+        run['pid'] = p.pid
+        fl_run = open(self.state, 'w')
+        fl_run.writelines(json.dumps(run))
+        fl_run.close()
+
+
 
         #with keyboard.Listener(
         #        on_press=self.event_close,
@@ -110,10 +104,6 @@ class wifiDump:
     # Метод возвращающий интерфейс в начальное состоние
     @staticmethod
     def begin_condition(iface):
-        subprocess.Popen(['sudo', 'service', 'network-manager', 'restart'],
-                         stdout=DN,
-                         stderr=ER)
-        time.sleep(0.5)
         subprocess.Popen(['sudo', 'iw', 'dev', iface, 'set', 'channel', '11'],
                          stdout=DN,
                          stderr=ER)
@@ -121,14 +111,6 @@ class wifiDump:
         na.set_mode(iface, 'managed')
 
         time.sleep(1)
-
-    # Завершение перехвата пакетов
-    def on_exit(self):
-        run = {}
-        run['running'] = False
-        fl_run = open(STATES_DIR + 'dump.state', 'w')
-        fl_run.writelines(json.dumps(run))
-        fl_run.close()
 
     # def event_close(self,key):
     #     key_stop = key
@@ -146,16 +128,28 @@ class wifiDump:
     #         raise KeyboardInterrupt
 
     # Метод дл обработки пакетов по умолчанию в случае, если пользователь не задал свой обработчик
-    def prns(self,pkt):
-        if not self.event.is_set():
-            raise KeyboardInterrupt
+    # def parse_packet(self,pkt):
+    #     print('send_packet')
+    #     if not self.event.is_set():
+    #         raise KeyboardInterrupt
 
     def my_sniff(self):#lambda x:x.haslayer(IP)
-        self.log.write_log('DUMP', 'Начинаетс перехват пакетов.')
-        pcap = sniff(iface=self.iface, prn=self.prn, store=self.store, offline=self.offline, lfilter=self.filter)
-        self.log.write_log('DUMP', 'Перехват пакетов завершен.')
+        logging.info('Начинаетс перехват пакетов.')
+        pcap = sniff(iface=self.iface, prn=self.papack, store=self.store, offline=self.offline, lfilter=self.filter)
+        logging.info('Перехват пакетов завершен.')
+
         if len(pcap) > 0:
             wrpcap('dumps.cap', pcap)
+
+
+# Завершение перехвата пакетов
+def on_exit():
+    tmp_fl = open(STATES_DIR + 'dump.state', 'r')
+    jsn = json.load(tmp_fl)
+    tmp_fl.close()
+    if jsn['pid'] != None:
+        os.kill(jsn['pid'], signal.SIGUSR1)
+    time.sleep(5)
 
 
 
@@ -163,10 +157,13 @@ class wifiDump:
 #interface = 'wlan0'
 #na.set_mode(interface, 'monitor')
 #print(na.get_mode(interface))
-#
+
 #fil = filter()
-#
-#my_wifi = wifiDump(_iface=interface,_store=0)
-#my_wifi.start(prn=my_wifi.prns,filter=fil.bssid('a4:2b:b0:e7:19:c0'))
-#print('hello')
-print('Exit_dump!')
+
+#my_wifi = wifiDump(_iface=interface,_filter=fil.bssid('a4:2b:b0:e7:19:c0'),_store=1)
+
+
+#my_wifi.start(None)
+
+#on_exit()
+
