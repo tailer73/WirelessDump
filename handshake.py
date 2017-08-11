@@ -5,11 +5,18 @@ from scapy.layers.l2 import EAPOL
 from scapy.layers.dot11 import RadioTap,Dot11,Dot11Beacon,Dot11ProbeReq,Dot11ProbeResp
 from NA import NetworkAdapters as na
 from pynput import keyboard
-from myLogs import Logging
+import signal
+from multiprocessing import Process
+import logging
 import json
 from dump import wifiDump,filter
+import dump
 from constants import *
 
+
+logging.basicConfig(format=u'[%(asctime)s] %(levelname)-8s  %(message)s (%(filename)s)',
+                    level=LOG_LEVEL,
+                    filename=LOGS_DIR + u'main.log')
 
 def write_to_file(file_name, line):
     f = open(file_name, 'a')
@@ -17,7 +24,13 @@ def write_to_file(file_name, line):
     f.close()
 
 class Session:
-
+    """ Сесси, формирует дл каждого клиента информацию о стадии его подключени.
+    Атрибуты:
+        - Anonce (сгенерированное точкой доступа псевдослучайное число)
+        - BSSID (mac точки доступа)
+        - Signal (уровень сигнала до точки доступа)
+        - Keys (Ключи, которые должны быть собраны в случае успешного подключени)
+    """
     def __init__(self,Anonce=None,BSSid=None,Signal= None,Key='key1'):
         self.BSSID = BSSid
         self.signalSSI = Signal
@@ -32,7 +45,7 @@ class Session:
         self.Keys[Key] = True
 
     # Метод обнулени сессии в случае получени не соответстующего пакета-EAPOL
-    def updateInfo(self,Anonce=None,BSSid=None,Signal=None,Snonce=None,newKey=None):
+    def update_info(self,Anonce=None,BSSid=None,Signal=None,Snonce=None,newKey=None):
         self.BSSID = BSSid
         self.signalSSI = Signal
         self.ANonce = Anonce
@@ -41,16 +54,20 @@ class Session:
 
 
 class Client:
-
+    """Клиенты, дл которых провертюс подключени к конкретной точке доступа
+       ### В ДАЛЬНЕЙШЕМ БУДЕТ УДАЛЕН, и будет заменен на tmpClient ###
+        Атрибуты:
+        - Anonce (псевдослучайное число генерируемое клиентом)
+        """
     def __init__(self,client,BSSid,ANonce,Signal,Key,pkt):
-        self.auth = False
+        #self.auth = False
         self.clientMAC = client
         #self.BSSID = BSSid
         self.tmpSession = Session(ANonce,BSSid,Signal,Key)
         self.goodSession = {Key:pkt}
 
     # Метод проверки завершени сессии подключени клиента к точке доступа
-    def succEAPOL(self):
+    def succ_eapol(self):
         cntFalse = len([x for x in self.tmpSession.Keys.values() if x == False])
         if cntFalse == 0:
             lst = []
@@ -58,19 +75,12 @@ class Client:
                 lst.append(x)
             tmp = plist.PacketList(lst,"goodHandshake")
             wrpcap('good_eapol.cap', tmp)
-            lg = Logging(LOGS_DIR + 'main.log')
-            lg.write_log('HANDSHAKE', 'Ддя клиента: {} осуществлен перехват Handshake'.format(self.clientMAC))
-            self.auth = True
-            handshake.on_exit('wlan0')
+            print('HANDSHAKE ready for client: {0}'.format(self.clientMAC))
+            #self.auth = True
+            #on_exit()
             #raise KeyboardInterrupt
 
 
-    #def badSessionAdd(self):
-    #    bad_session = Session()
-    #    bad_session.BSSID = self.tmpSession.BSSID
-    #    bad_session.Keys = self.tmpSession.Keys.copy()
-    #    bad_session.ANonce = self.tmpSession.ANonce
-    #    self.badSession.append(bad_session)
 
 
     # Метод проверки пакета-EAPOL на соответствие текущей сессии процедуры подключени клиента
@@ -84,14 +94,14 @@ class Client:
             if eapKey == 'key2':
                 self.tmpSession.SNonce = nonce
             elif eapKey =='key3' and self.tmpSession.ANonce != nonce:
-                self.tmpSession.updateInfo(None, None, None, None, None)
+                self.tmpSession.update_info(None, None, None, None, None)
                 self.goodSession.clear()
-            # print('ClientMAC: {0}, EAPOL ({1} from 4)'.format(self.clientMAC,eapKey))
+            print('ClientMAC: {0}, EAPOL ({1} from 4)'.format(self.clientMAC,eapKey))
             self.tmpSession.Keys[eapKey] = True
             self.goodSession[eapKey] = pkt
         else:
             if eapKey == 'key1' :
-                self.tmpSession.updateInfo(nonce,bssid,signal,None,eapKey)
+                self.tmpSession.update_info(nonce,bssid,signal,None,eapKey)
                 self.goodSession.clear()
                 self.tmpSession.Keys[eapKey] = True
                 self.goodSession[eapKey] = pkt
@@ -100,13 +110,42 @@ class Client:
                 self.tmpSession.signalSSI = signal
                 self.tmpSession.Keys[eapKey] = pkt
             elif eapKey == 'key3' and self.tmpSession.ANonce != nonce:
-                self.tmpSession.updateInfo(None, None, None, None, None)
+                self.tmpSession.update_info(None, None, None, None, None)
                 self.goodSession.clear()
             else:
                 self.tmpSession.Keys[eapKey] = pkt
-        self.succEAPOL()
+        self.succ_eapol()
 
+class tmpClient:
+    """ Временные клиенты, дл проверки сбора пакетов-handshake"""
+    def __init__(self,_mac):
+        self.mac = _mac
+        self.truePack = {
+            'key1': False,
+            'key2': False,
+            'key3': False,
+            'key4': False
+        }
+        self.anonce1 = None
+        self.anonce3 = None
 
+    def add_nonce(self,key,nonce):
+        if key == 'key1':
+            self.anonce1 = nonce
+        else:
+            self.anonce3 = nonce
+
+    def good_client(self):
+        if self.anonce1 == self.anonce3:
+            count_true = len([x for x in self.truePack.values() if x == False])
+            if count_true == 0:
+                return True
+
+class Bssid:
+    """Точки доступа, которые проверютс на собранный дл них handshake"""
+    def __init__(self,_bssid):
+        self.bssid = _bssid
+        self.clients = {}
 
 class handshake:
     """Handshake, осуществлет перехват пакетов на беспроводном интерфейсе. Атрибуты:
@@ -117,14 +156,14 @@ class handshake:
                             - filter (правила фильтра)
                             - clientAP (список клиентов и точек доступа которые начали процедуру подключени)
                             """
-    def __init__(self,_iface,_filter,_off = None,_store = 1):
+    def __init__(self,_iface):
         self.iface = _iface
-        self.filter = _filter
-        self.store = _store
-        self.offline = _off
-        self.log = Logging(LOGS_DIR + 'main.log')
         self.state = STATES_DIR + 'handshake.state'
         self.out = LOGS_DIR + 'handshake.output'
+        self.bssid_hs = LOGS_DIR + 'bssid_hs.output'
+        self.clf_name = LOGS_DIR + 'clients.output'
+        self.bssid_list = {}
+        self.bssid_handshake = []
         self.clientAP = {}
         self.eapolPacket = {
             b'\x00\x8a': 'key1',
@@ -133,32 +172,16 @@ class handshake:
             b'\x03\x0a': 'key4'
         }
 
-    # Метод обработки, вызываемый дл каждого перехваченного пакета
-    def hs(self, pkt):
-        print('i-am packet')
+    def write_to_file(self,file_name, line):
+        f = open(file_name, 'a')
+        f.writelines(line)
+        f.close()
 
+
+    # Метод обработки, вызываемый дл каждого перехваченного пакета в случае формировани
+    # дампа с выполненным handshake
+    def parse_handshake(self, pkt):
         dic = {}
-
-        if Dot11Beacon in pkt:
-            dic['src_mac'] = pkt.addr2
-            dic['dst_mac'] = pkt.addr1
-            dic['type'] = 'Beacon'
-            write_to_file(self.out,json.dumps(dic))
-
-        if Dot11ProbeReq in pkt:
-            dic['src_mac'] = pkt.addr2
-            dic['dst_mac'] = pkt.addr1
-            dic['type'] = 'ProbeRequest'
-            write_to_file(self.out, json.dumps(dic))
-
-        if Dot11ProbeResp in pkt:
-            dic['src_mac'] = pkt.addr2
-            dic['dst_mac'] = pkt.addr1
-            dic['type'] = 'ProbeRespone'
-            write_to_file(self.out, json.dumps(dic))
-
-        if not self.test.event.is_set():
-            raise KeyboardInterrupt
         if EAPOL in pkt:
             dic['src_mac'] = pkt.addr2
             dic['dst_mac'] = pkt.addr1
@@ -177,7 +200,6 @@ class handshake:
                     if pkt_Dot11.addr1 not in self.clientAP:
                         new_client = Client(pkt_Dot11.addr1, pkt_Dot11.addr2, nonce, dbm_sig, tmpKey, pkt)
                         self.clientAP[pkt_Dot11.addr1] = new_client
-                        print('ClientMAC: {0}, EAPOL ({1} from 4)'.format(pkt_Dot11.addr1, tmpKey))
                         eap = {}
                         eap['bssid'] = pkt_Dot11.addr2
                         eap['mac'] = pkt_Dot11.addr1
@@ -192,27 +214,103 @@ class handshake:
                 raise ValueError('Not key: {0}'.format(k.args[0]))
             except AttributeError as attr:
                 print(attr.args[0])
-            print(pkt.addr1)
+            print(pkt.addr3)
 
-    # Старт перехвата пакетов-handshake
-    def start(self):
-        self.log.write_log('HANDSHAKE', 'Запуск сбора пакетов-handshake')
+    # Метод обработки, вызываемый дл каждого перехваченного пакета в случае
+    # проверки дампа на наличие в нем собранного handshake
+    def parse_bssid(self,pkt):
+
+        if EAPOL in pkt:
+            dot11 = pkt.getlayer(Dot11)
+            new_pkt = pkt.getlayer(EAPOL)
+            nonce = bytes(new_pkt)[17:22]
+            key_inform = bytes(new_pkt)[5:7]
+            try:
+                tmpKey = self.eapolPacket.get(key_inform)
+                if tmpKey == 'key1' or tmpKey == 'key3':
+                    if dot11.addr3 not in self.bssid_list:
+                        tmp_client = tmpClient(dot11.addr1)
+                        tmp_client.truePack[tmpKey] = True
+                        tmp_client.add_nonce(tmpKey,nonce)
+
+                        tmp_bssid = Bssid(dot11.addr3)
+                        tmp_bssid.clients[dot11.addr1] = tmp_client
+                        self.bssid_list[dot11.addr3] = tmp_bssid
+                    else:
+                        if dot11.addr1 in self.bssid_list[dot11.addr3].clients:
+                            self.bssid_list[dot11.addr3].clients[dot11.addr1].truePack[tmpKey] = True
+                            self.bssid_list[dot11.addr3].clients[dot11.addr1].add_nonce(tmpKey,nonce)
+                        else:
+                            tmp_client = tmpClient(dot11.addr1)
+                            tmp_client.truePack[tmpKey] = True
+                            tmp_client.add_nonce(tmpKey, nonce)
+
+                            self.bssid_list[dot11.addr3].clients[dot11.addr1] = tmp_client
+                else:
+                    if dot11.addr3 in self.bssid_list:
+                        if dot11.addr2 in self.bssid_list[dot11.addr3].clients:
+                            self.bssid_list[dot11.addr3].clients[dot11.addr2].truePack[tmpKey] = True
+                            success_client = self.bssid_list[dot11.addr3].clients[dot11.addr2]
+                            if success_client.good_client():
+                                if dot11.addr3 not in self.bssid_handshake:
+                                    self.bssid_handshake.append(dot11.addr3)
+                                    self.write_to_file(self.bssid_hs,dot11.addr3)
+
+            except KeyError as k:
+                raise ValueError('Not key: {0}'.format(k.args[0]))
+
+            except AttributeError as attr:
+                print(attr.args[0])
+
+    def file_clear(self):
+        tmp_fl_out = open(self.out, 'w')
+        tmp_fl_out.close()
+
+        tmp_fl_st = open(self.state, 'w')
+        tmp_fl_st.close()
+
+        tmp_fl_bssid = open(self.bssid_hs,'w')
+        tmp_fl_bssid.close()
+
+    # Старт перехвата пакетов-handshake / собирает bssid дл , которых собран handshake
+    def start_analy(self,_off=None,_filter=lambda x: x.haslayer(Dot11),_store=1):
+        self.file_clear()
+
+        logging.info('Запуск сбора пакетов-handshake')
         if not self.iface is None:
             na.set_mode(self.iface, 'monitor')
-            print(na.get_mode(self.iface))
 
-        self.test = wifiDump(self.iface, self.offline, self.store)
 
-        self.test.start(self.hs,self.filter)
-        self.log.write_log('HANDSHAKE', 'Сбор пакетов-handshake завершен')
+        self.test = wifiDump(self.iface, _off, _filter,_store)
 
-    # Завершение сбора пакетов-handshake
-    @staticmethod
-    def on_exit(iface):
-        wifiDump.on_exit(iface)
+        self.test.start(self.parse_bssid)
+        logging.info('Сбор пакетов-handshake завершен')
+
+    # Старт перехвата пакетов-handshake / формирование дампа с handshake
+    def start_cut(self,_off = None,_filter=lambda x: x.haslayer(Dot11),_store=0):
+        self.file_clear()
+
+
+        logging.info('Запуск модул формировани дампа с пакетами-handshake')
+        if not self.iface is None:
+            na.set_mode(self.iface, 'monitor')
+
+
+        self.test = wifiDump(self.iface, _off, _filter, _store)
+
+        self.test.start(self.parse_handshake)
+        logging.info('Модуль формировани дампа с пакетами-handshake завершен')
+
+
+# Завершение сбора пакетов-handshake
+def on_exit():
+    dump.on_exit()
+    time.sleep(3)
+
 
 #tmp_filter = filter.bssid('a4:2b:b0:e7:19:c0')
-#tmp_filter = lambda x:x.haslayer(EAPOL)
-#hdshk = handshake('wlan0',tmp_filter)
-#hdshk.start()#'/home/user/PycharmProjects/wifiAttack/handshake.cap',0)
 
+#op = handshake('wlan0')
+#op.start_analy(None,tmp_filter)
+
+#on_exit()
