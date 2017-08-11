@@ -2,14 +2,19 @@ from scapy.all import *
 from scapy.layers.l2 import EAPOL
 from scapy.layers.dot11 import Dot11ProbeResp, Dot11, Dot11Beacon, Dot11ProbeReq, Dot11Elt
 import threading
+from multiprocessing import Process
 import json
-from myLogs import Logging
+import signal
 from dump import wifiDump as wd
 from constants import *
+import logging
 from location import Location
 from clientAndHotspot import Client, Hotspot
 from NA import NetworkAdapters as na
 
+logging.basicConfig(format=u'[%(asctime)s] %(levelname)-8s  %(message)s (%(filename)s)',
+                    level=LOG_LEVEL,
+                    filename=LOGS_DIR + u'main.log')
 
 class client:
     """Клиент, находщийс в зоне действи сигнала адаптера. Атрибуты:
@@ -45,8 +50,10 @@ class Monitor:
     def __init__(self, _iface):
         self.clnt = {}
         self.ap = {}
+        self.offline = None
+        self.store = 0
         self.iface = _iface
-        self.log = Logging(LOGS_DIR + 'main.log')
+        signal.signal(signal.SIGUSR1, self.read_state)
         self.apf_name = LOGS_DIR + 'networks.output'
         self.clf_name = LOGS_DIR + 'clients.output'
         self.state = STATES_DIR + 'monitoring.state'
@@ -65,7 +72,7 @@ class Monitor:
     @staticmethod
     def insert_cln_db(mac, signal, locat):
         cln_db = Client(mac=mac, pwr=signal,
-                        cur_ip=None, nick=None)
+                        cur_ip=None, nick=None,essid=None)
         cln_db.insert_info()
         Client.insert_geolocation(mac, signal, str(locat).replace("'", '"'))
 
@@ -80,7 +87,13 @@ class Monitor:
             f.close()
         self.lock.release()
 
-    # Модул извлечени информации о точке доступа из пакетов Beacon
+    def read_state(self,signum,frame):
+        self.event.clear()
+        time.sleep(3)
+        wd.begin_condition(self.iface)
+        #raise KeyboardInterrupt
+
+    # Модул извлечени информации о точках доступа из пакетов Beacon
     def add_ap(self, pkt):
         dic = {}
         #jsn = self.cord.get_current_loc(2)
@@ -99,7 +112,7 @@ class Monitor:
             dic['power'] = pkt.dbm_antsignal
             dic['channel'] = int.from_bytes(chn, 'big')
             self.write_to_file(self.apf_name, json.dumps(dic))
-            #self.insert_ap_db(dic, jsn)
+            self.insert_ap_db(dic, jsn)
             ap_tmp.ap_signal = pkt.dbm_antsignal
             self.ap[pkt.addr2] = ap_tmp
         else:
@@ -116,10 +129,10 @@ class Monitor:
                     pktDot11Elt = pktDot11Elt.payload
                 chn = bytes(pktDot11Elt.payload)[2:3]
                 dic['channel'] = int.from_bytes(chn, 'big')
-                #self.insert_ap_db(dic, jsn)
+                self.insert_ap_db(dic, jsn)
 
 
-    # Метод извлечени информации о точке доступа и о клиенте из пакетов ProbeResponse
+    # Метод извлечени информации о точках доступа и о клиентах из пакетов ProbeResponse
     def from_resp(self, pkt):
         # tmp_patt = r'[a-zA-Z-]{5,9}'
         dic_ap = {}
@@ -129,7 +142,7 @@ class Monitor:
         for rg in range(1, 2):
             pktDot11Elt = pktDot11Elt.payload
         tmp_bytes = bytes(pktDot11Elt.payload)[2:3]
-        #jsn = self.cord.get_current_loc(2)
+        jsn = self.cord.get_current_loc(2)
         if pkt.addr2 not in self.ap:
             ap_tmp = accsessPoint(pkt.addr2)
             bt = tmp_bytes
@@ -142,7 +155,7 @@ class Monitor:
             dic_ap['power'] = pkt.dbm_antsignal
             dic_ap['channel'] = int.from_bytes(bt, 'big')
             self.write_to_file(self.apf_name, json.dumps(dic_ap))
-            #self.insert_ap_db(dic_ap, jsn)
+            self.insert_ap_db(dic_ap, jsn)
             self.ap[pkt.addr2] = ap_tmp
         else:
             if self.ap[pkt.addr2].ap_signal < pkt.dbm_antsignal:
@@ -156,14 +169,14 @@ class Monitor:
                     dic_ap['essid'] = 'none'
                 dic_ap['power'] = pkt.dbm_antsignal
                 dic_ap['channel'] = int.from_bytes(bt, 'big')
-                #write_to_file(self.apf_name, json.dumps(dic_ap))
-                #self.insert_ap_db(dic_ap, jsn)
+                write_to_file(self.apf_name, json.dumps(dic_ap))
+                self.insert_ap_db(dic_ap, jsn)
 
         if pkt.addr1 not in self.clnt:
             dic_cl['mac'] = pkt.addr1
             dic_cl['power'] = pkt.dbm_antsignal
             self.write_to_file(self.clf_name, json.dumps(dic_cl))
-            #self.insert_cln_db(pkt.addr2, pkt.dbm_antsignal, jsn)
+            self.insert_cln_db(pkt.addr2, pkt.dbm_antsignal, jsn)
 
             clnt_tmp = client(pkt.addr1)
             clnt_tmp.signal = pkt.dbm_antsignal
@@ -173,18 +186,18 @@ class Monitor:
                 self.clnt[pkt.addr1].signal = pkt.dbm_antsignal
                 dic_cl['mac'] = pkt.addr2
                 dic_cl['power'] = pkt.dbm_antsignal
-                #self.insert_cln_db(pkt.addr2, pkt.dbm_antsignal, jsn)
+                self.insert_cln_db(pkt.addr2, pkt.dbm_antsignal, jsn)
 
-    # Метод извлечени информации  и о клиенте из пакетов ProbeRequest
+    # Метод извлечени информации  и о клиентах из пакетов ProbeRequest
     def add_сlient(self, pkt):
-        # cl = open(LOGS_DIR_NAME + 'clients.output','a')
+        #l = open(LOGS_DIR_NAME + 'clients.output','a')
         dic = {}
-        #jsn = self.cord.get_current_loc(2)
+        jsn = self.cord.get_current_loc(2)
         if pkt.addr2 not in self.clnt:
             dic['mac'] = pkt.addr2
             dic['power'] = pkt.dbm_antsignal
             self.write_to_file(self.clf_name, json.dumps(dic))
-            #self.insert_cln_db(pkt.addr2, pkt.dbm_antsignal, jsn)
+            self.insert_cln_db(pkt.addr2, pkt.dbm_antsignal, jsn)
 
             clnt_tmp = client(pkt.addr2)
             clnt_tmp.signal = pkt.dbm_antsignal
@@ -194,30 +207,23 @@ class Monitor:
                 self.clnt[pkt.addr2].signal = pkt.dbm_antsignal
                 dic['mac'] = pkt.addr2
                 dic['power'] = pkt.dbm_antsignal
-                #self.insert_cln_db(pkt.addr2, pkt.dbm_antsignal, jsn)
+                self.insert_cln_db(pkt.addr2, pkt.dbm_antsignal, jsn)
 
     # Смена канала на беспроводном адаптере
     def set_channel(self):
         while self.event.is_set():
             for chn in range(1, 12):
-                self.log.write_log('MONITORING', 'Анализ беспроводной сети на канале: {}.'.format(chn))
+                logging.info('Анализ беспроводной сети на канале: {}.'.format(chn))
                 chnl = str(chn)
                 subprocess.Popen(['sudo', 'iw', 'dev', self.iface, 'set', 'channel', chnl],
                                  stdout=DN,
                                  stderr=ER)
-                time.sleep(1)
-
-                tmp_fl = open(self.state,'r')
-                jsn = json.load(tmp_fl)
-                tmp_fl.close()
-                if not jsn['running']:
-                    self.event.clear()
+                if not self.event.is_set():
                     break
-                time.sleep(6)
-            #self.on_exit('wlan0')#удалить при использовании ручного вызова on_exit()
-        #print('exit_set_channel')
+                time.sleep(3)
 
 
+    # Очистка файлов перед запуском
     def init_file(self):
         tmp_fl_cl = open(self.clf_name, 'w')
         tmp_fl_cl.close()
@@ -226,27 +232,25 @@ class Monitor:
         tmp_fl_out = open(self.out,'w')
         tmp_fl_out.close()
 
+    # Обновленеие информации о клиентах и точках доста
     def clear_file(self):
-        print('clear_start')
         while self.event.is_set():
             self.write_to_file(self.apf_name,'')
             self.write_to_file(self.clf_name,'')
-            time.sleep(60)
-        print('exit_clear')
+            time.sleep(15)
+
 
     # Старт мониторинга беспровдоной сети
-    def start(self, offline=None, store=1):
-        run = {}
-        run['running'] = True
-        fl_run = open(self.state,'w')
-        fl_run.writelines(json.dumps(run))
-        fl_run.close()
+    def start_proc(self, _offline=None, _store=0):
         #on_off = True
-        self.log.write_log('MONITORING', 'Запущен мониторинг эфира')
+        self.offline = _offline
+        self.store = _store
+        logging.info('Запущен мониторинг эфира')
         interface = self.iface
         self.init_file()
+
         na.set_mode(interface, 'monitor')
-        time.sleep(2)
+        time.sleep(0.5)
 
         self.event = threading.Event()
         self.event.set()
@@ -265,35 +269,38 @@ class Monitor:
         try:
             self.t1.start()
         except KeyboardInterrupt:
-            print('huhui')
             self.event.clear()
             self.t1.join()
 
-        self.t2 = threading.Thread(None,self.set_channel)
-        try:
-            self.t2.start()
-        except KeyboardInterrupt:
-            self.event.clear()
-            self.t2.join()
+        self.set_channel()
 
+    # Запуск процесса мониторинга
+    def start(self,offline=None, store=0):
+        p = Process(target=mon.start_proc, args=(offline,store,))
+        p.start()
+
+        run = {}
+        run['pid'] = p.pid
+        fl_run = open(self.state, 'w')
+        fl_run.writelines(json.dumps(run))
+        fl_run.close()
+        time.sleep(2)
         #wd.begin_condition(self.iface)
 
     # Метод перехвата пакетов на уровне Dot11
     def my_sniff(self):  # lambda x:x.haslayer(IP)
         try:
-            #print('start_sniff')
-            self.log.write_log('MONITORING', 'Начинаетс перехват пакетов.')
-            pcap = sniff(iface=self.iface, prn=self.prn, store=1, lfilter=lambda x: x.haslayer(Dot11))
-            print('hui')
-            self.log.write_log('MONITORING', 'Мониторинг эфира завершен.')
+            logging.info('Начинаетс перехват пакетов.')
+            pcap = sniff(iface=self.iface, prn=self.parse_packet,offline=self.offline, store=self.store, lfilter=lambda x: x.haslayer(Dot11))
+            logging.info('Мониторинг эфира завершен.')
             if len(pcap) > 0:
                 wrpcap('dumps.cap', pcap)
         except KeyboardInterrupt:
-            self.log.write_log('MONITORING_KEYBOARD', 'Мониторинг эфира завершен.')
-        print('exit_my_sniff')
+            logging.error('Мониторинг эфира завершен.')
 
     # Метод обработки, вызываемый дл каждого перехваченного пакета
-    def prn(self, pkt):
+    def parse_packet(self, pkt):
+        print('----------')
         if not self.event.is_set():
             print('Keyboardinterrupt')
             raise KeyboardInterrupt
@@ -323,18 +330,16 @@ class Monitor:
             self.from_resp(pkt)
 
 
-    @staticmethod
-    def on_exit(iface):
-        run = {}
-        run['running'] = False
-        fl_run = open(STATES_DIR + 'monitoring.state', 'w')
-        fl_run.writelines(json.dumps(run))
-        fl_run.close()
-
-        wd.begin_condition(iface)
-
+# Завершение мониторинга
+def on_exit():
+    tmp_fl = open(STATES_DIR + 'monitoring.state', 'r')
+    jsn = json.load(tmp_fl)
+    tmp_fl.close()
+    if jsn['pid'] != None:
+        os.kill(jsn['pid'], signal.SIGUSR1)
+        time.sleep(3)
 
 #mon = Monitor('wlan0')
-#mon.start(None,1)
-#time.sleep(0)
-#print('exit')
+#mon.start()
+
+#on_exit()
