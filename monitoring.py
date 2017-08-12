@@ -300,9 +300,7 @@ class Monitor:
 
     # Метод обработки, вызываемый дл каждого перехваченного пакета
     def parse_packet(self, pkt):
-        print('----------')
         if not self.event.is_set():
-            print('Keyboardinterrupt')
             raise KeyboardInterrupt
 
         dic = {}
