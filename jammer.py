@@ -179,7 +179,7 @@ class deauth:
 
 	# Запуск процесса отправлени deauth-пакетов
 	def start(self, offline=None, store=0):
-		p = Process(target=tmp.start_deauth)
+		p = Process(target=self.start_deauth)
 		p.start()
 
 		run = {}
