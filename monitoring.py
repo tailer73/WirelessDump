@@ -279,7 +279,7 @@ class Monitor:
 
     # Запуск процесса мониторинга
     def start(self,offline=None, store=0):
-        p = Process(target=mon.start_proc, args=(offline,store,))
+        p = Process(target=self.start_proc, args=(offline,store,))
         p.start()
 
         run = {}
