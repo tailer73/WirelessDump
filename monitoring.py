@@ -87,11 +87,14 @@ class Monitor:
             f.close()
         self.lock.release()
 
+    # Ожидает сигнал о завершении
     def read_state(self,signum,frame):
-        self.event.clear()
-        time.sleep(3)
-        wd.begin_condition(self.iface)
-        #raise KeyboardInterrupt
+        try:
+            self.event.clear()
+            time.sleep(2)
+            wd.begin_condition(self.iface)
+        except KeyboardInterrupt:
+            sys.exit(1)
 
     # Модул извлечени информации о точках доступа из пакетов Beacon
     def add_ap(self, pkt):
