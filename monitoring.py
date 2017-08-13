@@ -223,7 +223,7 @@ class Monitor:
                                  stderr=ER)
                 if not self.event.is_set():
                     break
-                time.sleep(3)
+                time.sleep(2)
 
 
     # Очистка файлов перед запуском
@@ -240,7 +240,7 @@ class Monitor:
         while self.event.is_set():
             self.write_to_file(self.apf_name,'')
             self.write_to_file(self.clf_name,'')
-            time.sleep(15)
+            time.sleep(22)
 
 
     # Старт мониторинга беспровдоной сети
